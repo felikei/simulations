@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bilateral Central Ring Scotoma Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- WebGazer Library for Eye Tracking -->
+    <script src="https://webgazer.cs.brown.edu/webgazer.js" defer></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden; 
+            background-color: #1a1a1a;
+            color: #e5e5e5;
+        }
+
+        /* The Viewport Container */
+        #simulation-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            cursor: crosshair;
+            background-color: #000;
+        }
+
+        /* The Content Layer (Image/Text) */
+        #visual-target {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        /* The Scotoma Layer (The black blind spot) */
+        #scotoma-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+            background: radial-gradient(
+                circle at var(--x, 50%) var(--y, 50%), 
+                transparent var(--inner-r), 
+                rgba(0,0,0, var(--opacity)) var(--inner-feather), 
+                rgba(0,0,0, var(--opacity)) var(--outer-r), 
+                transparent var(--outer-feather)
+            );
+        }
+
+        /* The Scintillating Layer (Strobe Blobs) */
+        #scintillation-layer {
+            position: absolute;
+            /* Anchored exactly to the center of the gaze variables */
+            top: var(--y, 50%);
+            left: var(--x, 50%);
+            width: 1000px;
+            height: 1000px;
+            pointer-events: none;
+            z-index: 11;
+            mix-blend-mode: screen; 
+            
+            /* Blended organic blobs with softer edges and overlapping regions */
+            background-image: 
+                radial-gradient(circle at 40% 40%, rgba(128, 0, 128, 0.8) 0%, transparent 60%),
+                radial-gradient(circle at 60% 60%, rgba(255, 255, 0, 0.7) 0%, transparent 60%),
+                radial-gradient(circle at 40% 60%, rgba(128, 0, 128, 0.6) 10%, transparent 55%),
+                radial-gradient(circle at 60% 40%, rgba(255, 255, 0, 0.5) 5%, transparent 50%),
+                radial-gradient(circle at 50% 30%, rgba(255, 255, 0, 0.4) 0%, transparent 65%),
+                radial-gradient(circle at 30% 50%, rgba(128, 0, 128, 0.5) 0%, transparent 65%),
+                radial-gradient(circle at 70% 50%, rgba(255, 255, 0, 0.4) 0%, transparent 65%),
+                radial-gradient(circle at 50% 70%, rgba(128, 0, 128, 0.6) 0%, transparent 65%);
+            
+            background-position: 50% 50%;
+            background-size: 1000px 1000px;
+            background-repeat: no-repeat;
+            
+            /* Center the layer over the gaze point coordinate */
+            transform: translate(-50%, -50%); 
+
+            /* Mask using the same variables as the scotoma overlay */
+            -webkit-mask-image: radial-gradient(
+                circle at 50% 50%, 
+                transparent var(--inner-r), 
+                black var(--inner-feather), 
+                black var(--outer-r), 
+                transparent var(--outer-feather)
+            );
+            mask-image: radial-gradient(
+                circle at 50% 50%, 
+                transparent var(--inner-r), 
+                black var(--inner-feather), 
+                black var(--outer-r), 
+                transparent var(--outer-feather)
+            );
+
+            /* 5Hz Strobe Animation + Jitter + Soft Blur for better blending */
+            animation: strobe 0.2s infinite, jitter 0.1s infinite alternate; 
+            filter: blur(15px); /* Smooths the gradients into each other */
+        }
+
+        @keyframes strobe {
+            0%, 24% { opacity: 1; filter: contrast(1.8) brightness(1.3) blur(15px); }
+            25%, 49% { opacity: 0; }
+            50%, 74% { opacity: 0.9; filter: contrast(2) hue-rotate(30deg) blur(20px); }
+            75%, 100% { opacity: 0; }
+        }
+
+        @keyframes jitter {
+            from { transform: translate(-50.5%, -49.5%) scale(1); }
+            to { transform: translate(-49.5%, -50.5%) scale(1.05); }
+        }
+
+        /* UI Panel Styling */
+        .control-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: rgba(30, 30, 30, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 50;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .control-panel.collapsed {
+            transform: translateX(calc(-100% - 20px));
+        }
+
+        input[type=range] {
+            -webkit-appearance: none; 
+            background: transparent; 
+            width: 100%;
+            margin: 10px 0;
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4b5563;
+            margin-top: -6px; 
+        }
+
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            background: #4b5563;
+            border-radius: 2px;
+        }
+
+        #webgazerVideoContainer {
+            display: block !important;
+            position: fixed !important;
+            bottom: 20px !important;
+            right: 20px !important;
+            top: auto !important;
+            left: auto !important;
+            width: 180px !important;
+            height: auto !important;
+            z-index: 100 !important;
+            border-radius: 8px;
+            border: 2px solid #3b82f6;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        
+        #webgazerFaceOverlay, #webgazerFaceFeedbackBox {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+
+    <button id="toggle-panel" class="absolute top-4 left-4 z-50 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full shadow-lg hidden">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        </svg>
+    </button>
+
+    <div id="simulation-container">
+        <div id="text-target-container" class="w-full h-full bg-white text-black p-8 overflow-hidden flex items-center justify-center">
+            <div class="max-w-3xl text-lg md:text-xl leading-relaxed font-serif text-justify select-none pointer-events-none">
+                <h1 class="text-3xl font-bold mb-4 text-center text-black">Bilateral Central Ring Scotoma</h1>
+                <p class="mb-4">
+                    The central area of the visual field is critical for high-resolution tasks. 
+                    In patients with <strong>Bilateral Central Ring Scotoma</strong>, the fovea is spared (128px radius), 
+                    but a 5Hz strobe-like scintillating ring surrounds it.
+                </p>
+                <p class="mb-4">
+                    The <strong>scintillating noise</strong> is now composed of blended, soft-edged gradients that merge into one another, creating a more realistic "shimmering" effect within the scotoma ring.
+                </p>
+                <p>
+                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. 
+                    Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+                </p>
+            </div>
+        </div>
+
+        <img id="visual-target" src="" alt="Uploaded Image" style="display: none;">
+
+        <div id="scotoma-overlay"></div>
+        <div id="scintillation-layer"></div>
+    </div>
+
+    <div id="panel" class="control-panel text-sm">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold text-white">Scotoma Simulator</h2>
+            <button id="close-panel" class="text-gray-400 hover:text-white">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+            </button>
+        </div>
+
+        <div class="space-y-6">
+            <div>
+                <label class="block text-gray-400 mb-2 font-semibold uppercase text-xs tracking-wider">Mode</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <button id="btn-mode-mouse" class="px-3 py-2 bg-blue-600 rounded text-white text-xs font-medium transition ring-2 ring-blue-400">Mouse</button>
+                    <button id="btn-mode-gaze" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-xs font-medium transition">Webcam (Gaze)</button>
+                </div>
+                <p id="calibration-msg" class="text-yellow-400 text-[10px] mt-2 hidden uppercase tracking-tighter">Click screen corners to calibrate gaze.</p>
+            </div>
+
+            <div>
+                <label class="block text-gray-400 mb-2 font-semibold uppercase text-xs tracking-wider">Background Source</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <button id="btn-text" class="px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white text-xs font-medium transition active-source ring-2 ring-blue-400">Text</button>
+                    <button id="btn-upload" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-xs font-medium transition">Image</button>
+                </div>
+                <input type="file" id="file-input" accept="image/*" class="hidden">
+            </div>
+
+            <div class="space-y-4 opacity-60">
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-gray-300">Foveal Sparing (Fixed)</label>
+                        <span class="text-blue-400">128px</span>
+                    </div>
+                    <input type="range" value="128" disabled>
+                </div>
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-gray-300">Ring Thickness (Fixed)</label>
+                        <span class="text-blue-400">156px</span>
+                    </div>
+                    <input type="range" value="156" disabled>
+                </div>
+            </div>
+
+            <div class="pt-4 border-t border-gray-700">
+                <p class="text-[10px] text-gray-500 uppercase font-bold tracking-widest">5Hz Strobe + Scintillation</p>
+                <p class="text-[10px] text-gray-400 mt-1">Organic blended noise texture.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const container = document.getElementById('simulation-container');
+        const overlay = document.getElementById('scotoma-overlay');
+        const scintillation = document.getElementById('scintillation-layer');
+        const panel = document.getElementById('panel');
+        const closePanelBtn = document.getElementById('close-panel');
+        const togglePanelBtn = document.getElementById('toggle-panel');
+        const calibrationMsg = document.getElementById('calibration-msg');
+
+        const btnModeMouse = document.getElementById('btn-mode-mouse');
+        const btnModeGaze = document.getElementById('btn-mode-gaze');
+        const btnText = document.getElementById('btn-text');
+        const btnUpload = document.getElementById('btn-upload');
+        const fileInput = document.getElementById('file-input');
+
+        const viewText = document.getElementById('text-target-container');
+        const viewImg = document.getElementById('visual-target');
+
+        let currentMode = 'mouse';
+        let webgazerInitialized = false;
+
+        const INNER_R = 128;
+        const THICKNESS = 156;
+        const OPACITY = 1.0;
+        const FEATHER = 10;
+
+        function updateScotomaParams() {
+            const outerR = INNER_R + THICKNESS;
+            const vars = {
+                '--inner-r': `${INNER_R}px`,
+                '--inner-feather': `${INNER_R + FEATHER}px`,
+                '--outer-r': `${outerR}px`,
+                '--outer-feather': `${outerR + FEATHER}px`,
+                '--opacity': OPACITY
+            };
+
+            for (const [key, value] of Object.entries(vars)) {
+                overlay.style.setProperty(key, value);
+                scintillation.style.setProperty(key, value);
+            }
+        }
+
+        function updatePosition(xPercent, yPercent) {
+            const x = `${xPercent}%`;
+            const y = `${yPercent}%`;
+            overlay.style.setProperty('--x', x);
+            overlay.style.setProperty('--y', y);
+            scintillation.style.setProperty('--x', x);
+            scintillation.style.setProperty('--y', y);
+        }
+
+        function handleMouseMove(e) {
+            if (currentMode !== 'mouse') return;
+            const xPercent = (e.clientX / window.innerWidth) * 100;
+            const yPercent = (e.clientY / window.innerHeight) * 100;
+            updatePosition(xPercent, yPercent);
+        }
+
+        async function enableGaze() {
+            if (!window.webgazer) {
+                alert("WebGazer not available.");
+                setMode('mouse');
+                return;
+            }
+
+            try {
+                if (!webgazerInitialized) {
+                    await webgazer.setRegression('ridge') 
+                        .setGazeListener((data) => {
+                            if (data == null || currentMode !== 'gaze') return;
+                            const xPercent = (data.x / window.innerWidth) * 100;
+                            const yPercent = (data.y / window.innerHeight) * 100;
+                            updatePosition(xPercent, yPercent);
+                        })
+                        .begin();
+                    webgazer.showVideoPreview(true);
+                    webgazerInitialized = true;
+                } else {
+                    webgazer.resume();
+                    webgazer.showVideoPreview(true);
+                }
+                calibrationMsg.classList.remove('hidden');
+            } catch (err) {
+                console.error(err);
+                setMode('mouse');
+            }
+        }
+
+        function disableGaze() {
+            if (webgazerInitialized) {
+                webgazer.pause();
+                webgazer.showVideoPreview(false);
+            }
+            calibrationMsg.classList.add('hidden');
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+            if (mode === 'mouse') {
+                btnModeMouse.classList.add('bg-blue-600', 'ring-2', 'ring-blue-400');
+                btnModeGaze.classList.remove('bg-blue-600', 'ring-2', 'ring-blue-400');
+                disableGaze();
+            } else {
+                btnModeGaze.classList.add('bg-blue-600', 'ring-2', 'ring-blue-400');
+                btnModeMouse.classList.remove('bg-blue-600', 'ring-2', 'ring-blue-400');
+                enableGaze();
+            }
+        }
+
+        btnModeMouse.addEventListener('click', () => setMode('mouse'));
+        btnModeGaze.addEventListener('click', () => setMode('gaze'));
+        container.addEventListener('mousemove', handleMouseMove);
+        
+        closePanelBtn.addEventListener('click', () => {
+            panel.classList.add('collapsed');
+            togglePanelBtn.classList.remove('hidden');
+        });
+
+        togglePanelBtn.addEventListener('click', () => {
+            panel.classList.remove('collapsed');
+            togglePanelBtn.classList.add('hidden');
+        });
+
+        btnText.addEventListener('click', () => {
+            viewImg.style.display = 'none';
+            viewText.style.display = 'flex';
+            setActiveSourceButton(btnText);
+        });
+
+        btnUpload.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    viewText.style.display = 'none';
+                    viewImg.src = e.target.result;
+                    viewImg.style.display = 'block';
+                    setActiveSourceButton(btnUpload);
+                };
+                reader.readAsDataURL(e.target.files[0]);
+            }
+        });
+
+        function setActiveSourceButton(activeBtn) {
+            [btnText, btnUpload].forEach(btn => {
+                btn.classList.toggle('ring-2', btn === activeBtn);
+                btn.classList.toggle('ring-blue-400', btn === activeBtn);
+                btn.classList.toggle('bg-blue-600', btn === activeBtn);
+                btn.classList.toggle('bg-gray-700', btn !== activeBtn);
+            });
+        }
+
+        updateScotomaParams();
+        updatePosition(50, 50);
+
+    </script>
+</body>
+</html>
